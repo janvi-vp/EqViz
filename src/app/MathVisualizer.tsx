@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Trash2, Eye, EyeOff, RefreshCw, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
+import { Plus, Trash2, Eye, EyeOff, RefreshCw, ZoomIn, ZoomOut } from 'lucide-react';
 import * as math from 'mathjs';
 
 const MathVisualizer: React.FC = () => {
@@ -32,12 +32,12 @@ const MathVisualizer: React.FC = () => {
             const compiled = math.compile(expr);
             compiled.evaluate({ x: 0, y: 0 });
             return { valid: true, compiled, error: null };
-        } catch (e) {
+        } catch (e: unknown) {
             let errorMsg = 'Unknown error';
             if (e instanceof Error) {
                 errorMsg = e.message;
             } else if (typeof e === 'object' && e !== null && 'message' in e) {
-                errorMsg = String((e as any).message);
+                errorMsg = String((e as { message?: string }).message);
             }
             return { valid: false, compiled: null, error: errorMsg };
         }
@@ -260,7 +260,7 @@ const MathVisualizer: React.FC = () => {
                     } else {
                         firstPoint = true;
                     }
-                } catch (e) {
+                } catch {
                     firstPoint = true;
                 }
             }
