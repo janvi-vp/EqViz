@@ -3,6 +3,9 @@
 
 >A Next.js app for visualizing mathematical equations interactively.
 
+🌐 **Live Demo:** [https://eq-viz.vercel.app/](https://eq-viz.vercel.app/)  
+📂 **GitHub:** [https://github.com/janvi-vp/EqViz](https://github.com/janvi-vp/EqViz)
+
 ## Features
 
 - Add, edit, and delete equations
