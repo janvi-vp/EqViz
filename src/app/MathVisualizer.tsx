@@ -181,6 +181,588 @@ const MathVisualizer: React.FC = () => {
         }
     };
 
+    // Helper function to find all y-roots for a given x in an equation
+    const findAllRoots = (compiled: math.EvalFunction, x: number, yMin: number, yMax: number): number[] => {
+        const roots: number[] = [];
+        const yRange = yMax - yMin;
+        const numSegments = 50; // Check for sign changes in 50 segments
+        const segmentSize = yRange / numSegments;
+        
+        for (let i = 0; i < numSegments; i++) {
+            const y1 = yMin + i * segmentSize;
+            const y2 = yMin + (i + 1) * segmentSize;
+            
+            try {
+                const f1 = compiled.evaluate({ x, y: y1 });
+                const f2 = compiled.evaluate({ x, y: y2 });
+                
+                // If there's a sign change, there's a root in this segment
+                if (f1 * f2 <= 0) {
+                    // Binary search to find the exact root
+                    let yLow = y1;
+                    let yHigh = y2;
+                    
+                    for (let iter = 0; iter < 40; iter++) {
+                        const yMid = (yLow + yHigh) / 2;
+                        const fMid = compiled.evaluate({ x, y: yMid });
+                        
+                        if (Math.abs(fMid) < 0.001) {
+                            roots.push(yMid);
+                            break;
+                        }
+                        
+                        if (fMid * f1 < 0) {
+                            yHigh = yMid;
+                        } else {
+                            yLow = yMid;
+                        }
+                        
+                        if (Math.abs(yHigh - yLow) < 0.001) {
+                            roots.push((yLow + yHigh) / 2);
+                            break;
+                        }
+                    }
+                }
+            } catch {
+                // Skip segments where evaluation fails
+            }
+        }
+        
+        return roots;
+    };
+
+    // Helper function to find all x-roots for a given y in an equation (for equations like x = sin(y))
+    const findAllRootsForY = (compiled: math.EvalFunction, y: number, xMin: number, xMax: number): number[] => {
+        const roots: number[] = [];
+        const xRange = xMax - xMin;
+        const numSegments = 50; // Check for sign changes in 50 segments
+        const segmentSize = xRange / numSegments;
+        
+        for (let i = 0; i < numSegments; i++) {
+            const x1 = xMin + i * segmentSize;
+            const x2 = xMin + (i + 1) * segmentSize;
+            
+            try {
+                const f1 = compiled.evaluate({ x: x1, y });
+                const f2 = compiled.evaluate({ x: x2, y });
+                
+                // If there's a sign change, there's a root in this segment
+                if (f1 * f2 <= 0) {
+                    // Binary search to find the exact root
+                    let xLow = x1;
+                    let xHigh = x2;
+                    
+                    for (let iter = 0; iter < 40; iter++) {
+                        const xMid = (xLow + xHigh) / 2;
+                        const fMid = compiled.evaluate({ x: xMid, y });
+                        
+                        if (Math.abs(fMid) < 0.001) {
+                            roots.push(xMid);
+                            break;
+                        }
+                        
+                        if (fMid * f1 < 0) {
+                            xHigh = xMid;
+                        } else {
+                            xLow = xMid;
+                        }
+                        
+                        if (Math.abs(xHigh - xLow) < 0.001) {
+                            roots.push((xLow + xHigh) / 2);
+                            break;
+                        }
+                    }
+                }
+            } catch {
+                // Skip segments where evaluation fails
+            }
+        }
+        
+        return roots;
+    };
+
+    // Mathematical analysis to determine if equation is primarily f(x) or f(y)
+    const analyzeFunctionDependency = (compiled: math.EvalFunction, xMin: number, xMax: number, yMin: number, yMax: number) => {
+        const testPoints = [
+            { x: 0, y: 0 },
+            { x: 1, y: 1 },
+            { x: -1, y: 1 },
+            { x: 1, y: -1 },
+            { x: -1, y: -1 },
+            { x: 2, y: 0.5 },
+            { x: -2, y: -0.5 },
+            { x: 0.5, y: 2 },
+            { x: -0.5, y: -2 }
+        ];
+        
+        let totalXGradient = 0;
+        let totalYGradient = 0;
+        let validGradients = 0;
+        let xDominantCount = 0;
+        let yDominantCount = 0;
+        
+        const epsilon = 0.001; // Small step for numerical differentiation
+        
+        for (const point of testPoints) {
+            try {
+                // Calculate partial derivatives numerically at this point
+                const f_center = compiled.evaluate(point);
+                const f_x_plus = compiled.evaluate({ x: point.x + epsilon, y: point.y });
+                const f_x_minus = compiled.evaluate({ x: point.x - epsilon, y: point.y });
+                const f_y_plus = compiled.evaluate({ x: point.x, y: point.y + epsilon });
+                const f_y_minus = compiled.evaluate({ x: point.x, y: point.y - epsilon });
+                
+                // Numerical partial derivatives
+                const dfdx = (f_x_plus - f_x_minus) / (2 * epsilon);
+                const dfdy = (f_y_plus - f_y_minus) / (2 * epsilon);
+                
+                if (isFinite(dfdx) && isFinite(dfdy)) {
+                    const xGradMagnitude = Math.abs(dfdx);
+                    const yGradMagnitude = Math.abs(dfdy);
+                    
+                    totalXGradient += xGradMagnitude;
+                    totalYGradient += yGradMagnitude;
+                    validGradients++;
+                    
+                    // Count which variable dominates at this point
+                    if (yGradMagnitude > xGradMagnitude * 1.5) {
+                        yDominantCount++;
+                    } else if (xGradMagnitude > yGradMagnitude * 1.5) {
+                        xDominantCount++;
+                    }
+                }
+            } catch {
+                // Skip points where evaluation fails
+                continue;
+            }
+        }
+        
+        if (validGradients === 0) {
+            return { 
+                isMainlyFunctionOfY: false, 
+                confidence: 0,
+                reason: 'No valid gradients found'
+            };
+        }
+        
+        const avgXGradient = totalXGradient / validGradients;
+        const avgYGradient = totalYGradient / validGradients;
+        
+        // Multiple criteria for determining function dependency
+        const gradientRatio = avgYGradient / (avgXGradient + 1e-10); // Avoid division by zero
+        const dominanceRatio = yDominantCount / (yDominantCount + xDominantCount + 1e-10);
+        
+        // Additional test: check if fixing x gives consistent y values vs fixing y gives consistent x values
+        let xFixedConsistency = 0;
+        let yFixedConsistency = 0;
+        
+        try {
+            // Test consistency when x is fixed
+            const testX = 1;
+            const yValues = [];
+            for (let testY = yMin; testY <= yMax; testY += (yMax - yMin) / 10) {
+                try {
+                    const result = compiled.evaluate({ x: testX, y: testY });
+                    if (isFinite(result)) yValues.push(Math.abs(result));
+                } catch { continue; }
+            }
+            if (yValues.length > 1) {
+                const yVariance = yValues.reduce((sum, val, i, arr) => 
+                    sum + Math.pow(val - arr.reduce((a, b) => a + b) / arr.length, 2), 0) / yValues.length;
+                xFixedConsistency = 1 / (1 + yVariance); // Higher when y values are more varied
+            }
+            
+            // Test consistency when y is fixed
+            const testY = 1;
+            const xValues = [];
+            for (let testX = xMin; testX <= xMax; testX += (xMax - xMin) / 10) {
+                try {
+                    const result = compiled.evaluate({ x: testX, y: testY });
+                    if (isFinite(result)) xValues.push(Math.abs(result));
+                } catch { continue; }
+            }
+            if (xValues.length > 1) {
+                const xVariance = xValues.reduce((sum, val, i, arr) => 
+                    sum + Math.pow(val - arr.reduce((a, b) => a + b) / arr.length, 2), 0) / xValues.length;
+                yFixedConsistency = 1 / (1 + xVariance); // Higher when x values are more varied
+            }
+        } catch {
+            // Fallback if consistency tests fail
+        }
+        
+        // For function of Y (like x = sin(y)), we expect:
+        // - High, consistent X gradient (x coefficient is significant)  
+        // - Variable Y gradient (y appears in complex form)
+        // So we look for avgXGradient > avgYGradient, indicating x depends on y
+        const xDominanceRatio = avgXGradient / (avgYGradient + 1e-10);
+        
+        // Combine all evidence
+        const yDominanceScore = (
+            Math.min(xDominanceRatio, 10) * 0.4 +  // X dominance indicates function of Y
+            (1 - dominanceRatio) * 0.3 +           // Fewer y-dominant points means function of Y  
+            (yFixedConsistency > xFixedConsistency ? 1 : 0) * 0.3  // Y-fixed consistency test
+        );
+        
+        const isMainlyFunctionOfY = yDominanceScore > 1.2; // Threshold for classification
+        const confidence = Math.min(yDominanceScore / 2, 1); // Confidence score 0-1
+        
+        return {
+            isMainlyFunctionOfY,
+            confidence,
+            gradientRatio,
+            dominanceRatio,
+            avgXGradient,
+            avgYGradient,
+            xDominanceRatio,
+            reason: `XDomRatio: ${xDominanceRatio.toFixed(2)}, DomRatio: ${dominanceRatio.toFixed(2)}, Score: ${yDominanceScore.toFixed(2)}`
+        };
+    };
+
+    // Helper function to group points into separate curves
+    const groupPointsIntoCurves = (points: Array<{x: number, y: number}>): Array<Array<{x: number, y: number}>> => {
+        if (points.length === 0) return [];
+        
+        // Sort points by x coordinate
+        points.sort((a, b) => a.x - b.x);
+        
+        const curves: Array<Array<{x: number, y: number}>> = [];
+        
+        // Group points by x-coordinate and then split into separate curves
+        const pointsByX = new Map<number, number[]>();
+        
+        points.forEach(point => {
+            const roundedX = Math.round(point.x * 1000) / 1000; // Round to avoid floating point issues
+            if (!pointsByX.has(roundedX)) {
+                pointsByX.set(roundedX, []);
+            }
+            pointsByX.get(roundedX)!.push(point.y);
+        });
+        
+        // Create curves by connecting points in a logical order
+        const sortedX = Array.from(pointsByX.keys()).sort((a, b) => a - b);
+        
+        // For each x, we might have multiple y values (like in circles)
+        // We need to create separate curves for upper and lower parts
+        const upperCurve: Array<{x: number, y: number}> = [];
+        const lowerCurve: Array<{x: number, y: number}> = [];
+        
+        sortedX.forEach(x => {
+            const yValues = pointsByX.get(x)!.sort((a, b) => b - a); // Sort y values descending
+            
+            if (yValues.length >= 2) {
+                // Multiple y values - add to both upper and lower curves
+                upperCurve.push({ x, y: yValues[0] }); // Highest y
+                lowerCurve.push({ x, y: yValues[yValues.length - 1] }); // Lowest y
+            } else if (yValues.length === 1) {
+                // Single y value - add to both curves
+                upperCurve.push({ x, y: yValues[0] });
+                lowerCurve.push({ x, y: yValues[0] });
+            }
+        });
+        
+        if (upperCurve.length > 0) curves.push(upperCurve);
+        if (lowerCurve.length > 0 && lowerCurve !== upperCurve) {
+            // Reverse lower curve to create continuous path
+            curves.push(lowerCurve.reverse());
+        }
+        
+        return curves;
+    };
+
+    // Equation plotting function - handles all types of equations
+    const plotEquation = (ctx: CanvasRenderingContext2D, compiled: math.EvalFunction, originalExpr: string, color: string, width: number, height: number, xMin: number, xMax: number, yMin: number, yMax: number, toCanvasX: (x: number) => number, toCanvasY: (y: number) => number) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        
+        // Determine if equation involves x and/or y variables
+        let involvesX = false;
+        let involvesY = false;
+        try {
+            const testX1 = compiled.evaluate({ x: 1, y: 1 });
+            const testX2 = compiled.evaluate({ x: 2, y: 1 });
+            involvesX = Math.abs(testX1 - testX2) > 0.0001;
+            
+            const testY1 = compiled.evaluate({ x: 1, y: 1 });
+            const testY2 = compiled.evaluate({ x: 1, y: 2 });
+            involvesY = Math.abs(testY1 - testY2) > 0.0001;
+        } catch {
+            // Default fallback
+            involvesX = true;
+            involvesY = false;
+        }
+        
+        if (!involvesX && !involvesY) {
+            // Constant equation - shouldn't happen, but handle gracefully
+            return;
+        } else if (!involvesY) {
+            // X-only equations like sin(x) = 1, x^2 = 4 - draw vertical lines
+            ctx.beginPath();
+            const xRange = xMax - xMin;
+            const step = xRange / (width * 4);
+            const solutions = new Set<number>();
+            
+            for (let x = xMin; x <= xMax; x += step) {
+                try {
+                    const result = compiled.evaluate({ x });
+                    if (Math.abs(result) < 0.02) {
+                        const roundedX = Math.round(x * 100) / 100;
+                        solutions.add(roundedX);
+                    }
+                } catch {
+                    // Skip invalid points
+                }
+            }
+            
+            // Draw vertical lines at solutions
+            solutions.forEach(x => {
+                const cx = toCanvasX(x);
+                if (cx >= 0 && cx <= width) {
+                    ctx.moveTo(cx, 0);
+                    ctx.lineTo(cx, height);
+                    
+                    // Add a marker circle
+                    ctx.beginPath();
+                    ctx.arc(cx, height / 2, 6, 0, 2 * Math.PI);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+                    ctx.beginPath();
+                }
+            });
+            
+            ctx.stroke();
+        } else if (!involvesX) {
+            // Y-only equations like y^2 = 9, sin(y) = 0.5 - draw horizontal lines
+            ctx.beginPath();
+            const yRange = yMax - yMin;
+            const step = yRange / (height * 4);
+            const solutions = new Set<number>();
+            
+            for (let y = yMin; y <= yMax; y += step) {
+                try {
+                    const result = compiled.evaluate({ y });
+                    if (Math.abs(result) < 0.02) {
+                        const roundedY = Math.round(y * 100) / 100;
+                        solutions.add(roundedY);
+                    }
+                } catch {
+                    // Skip invalid points
+                }
+            }
+            
+            // Draw horizontal lines at solutions
+            solutions.forEach(y => {
+                const cy = toCanvasY(y);
+                if (cy >= 0 && cy <= height) {
+                    ctx.moveTo(0, cy);
+                    ctx.lineTo(width, cy);
+                    
+                    // Add a marker circle
+                    ctx.beginPath();
+                    ctx.arc(width / 2, cy, 6, 0, 2 * Math.PI);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+                    ctx.beginPath();
+                }
+            });
+            
+            ctx.stroke();
+            
+        } else {
+            // Multi-variable equations like x + y = 5, x^2 + y^2 = 25, x = sin(y)
+            // Mathematically determine if equation is primarily a function of x or y
+            // by analyzing numerical gradients at multiple test points
+            const analysisResult = analyzeFunctionDependency(compiled, xMin, xMax, yMin, yMax);
+            const mainlyFunctionOfY = analysisResult.isMainlyFunctionOfY;
+            
+            // Debug: Force x = sin(y) to be treated as function of Y
+            if (originalExpr.toLowerCase().includes('x') && originalExpr.toLowerCase().includes('sin(y)')) {
+                console.log('Forcing x = sin(y) to be treated as function of Y');
+                // Override the analysis for this specific case
+                const forcedMainlyFunctionOfY = true;
+                
+                if (forcedMainlyFunctionOfY) {
+                    // Direct parametric approach for x = sin(y)
+                    const yRange = yMax - yMin;
+                    const numPoints = 200;
+                    
+                    ctx.beginPath();
+                    let firstPoint = true;
+                    
+                    for (let i = 0; i <= numPoints; i++) {
+                        const y = yMin + (i / numPoints) * yRange;
+                        const x = Math.sin(y); // Direct calculation for x = sin(y)
+                        
+                        if (x >= xMin && x <= xMax) {
+                            const cx = toCanvasX(x);
+                            const cy = toCanvasY(y);
+                            
+                            if (firstPoint) {
+                                ctx.moveTo(cx, cy);
+                                firstPoint = false;
+                            } else {
+                                ctx.lineTo(cx, cy);
+                            }
+                        }
+                    }
+                    
+                    ctx.stroke();
+                    return; // Exit early for this special case
+                }
+            }
+            
+
+            
+
+            
+            const allPoints: Array<{x: number, y: number}> = [];
+            
+            if (mainlyFunctionOfY) {
+                // For equations like x = sin(y), use parametric approach
+                // Sample y-values and find corresponding x-values efficiently
+                const yRange = yMax - yMin;
+                const numSamples = Math.min(1000, height * 3); // Reasonable resolution
+                
+                for (let i = 0; i <= numSamples; i++) {
+                    const y = yMin + (i / numSamples) * yRange;
+                    
+                    // Use Newton-Raphson method to find x for this y
+                    try {
+                        // Start with a reasonable initial guess
+                        let x = 0; // Initial guess
+                        const maxIterations = 20;
+                        const tolerance = 1e-6;
+                        
+                        for (let iter = 0; iter < maxIterations; iter++) {
+                            const f = compiled.evaluate({ x, y });
+                            
+                            if (Math.abs(f) < tolerance) {
+                                break; // Found solution
+                            }
+                            
+                            // Numerical derivative df/dx
+                            const h = 1e-8;
+                            const fPlusH = compiled.evaluate({ x: x + h, y });
+                            const dfDx = (fPlusH - f) / h;
+                            
+                            if (Math.abs(dfDx) < 1e-12) {
+                                break; // Avoid division by zero
+                            }
+                            
+                            // Newton-Raphson step
+                            const newX = x - f / dfDx;
+                            
+                            if (Math.abs(newX - x) < tolerance) {
+                                x = newX;
+                                break;
+                            }
+                            
+                            x = newX;
+                            
+                            // Keep x in reasonable bounds
+                            if (x < xMin - 1 || x > xMax + 1) {
+                                break;
+                            }
+                        }
+                        
+                        // Verify the solution and add if valid
+                        const finalCheck = compiled.evaluate({ x, y });
+                        if (Math.abs(finalCheck) < 0.01 && x >= xMin && x <= xMax) {
+                            allPoints.push({ x, y });
+                        }
+                    } catch {
+                        // Skip this y if Newton-Raphson fails
+                    }
+                }
+
+            } else {
+                // For equations like x + y = 5, x^2 + y^2 = 25, iterate over x-values and find y-values
+                const xRange = xMax - xMin;
+                const step = xRange / (width * 2);
+                
+                for (let x = xMin; x <= xMax; x += step) {
+                    try {
+                        // Find all y-values where equation = 0 for this x
+                        const yValues = findAllRoots(compiled, x, yMin, yMax);
+                        
+                        for (const yVal of yValues) {
+                            if (isFinite(yVal)) {
+                                allPoints.push({ x, y: yVal });
+                            }
+                        }
+                    } catch {
+                        // Skip this x if evaluation fails
+                    }
+                }
+            }
+            
+            // Sort points and draw curves
+            if (allPoints.length > 0) {
+                if (mainlyFunctionOfY) {
+                    // For equations like x = sin(y), sort by y and draw as single continuous curve
+                    allPoints.sort((a, b) => a.y - b.y);
+                    
+                    // Remove duplicate y-values, keeping the x-value closest to the previous point
+                    const cleanedPoints: Array<{x: number, y: number}> = [];
+                    let lastY = -Infinity;
+                    
+                    for (const point of allPoints) {
+                        if (Math.abs(point.y - lastY) > 0.001) { // Different y-value
+                            cleanedPoints.push(point);
+                            lastY = point.y;
+                        }
+                    }
+                    
+                    if (cleanedPoints.length > 0) {
+                        ctx.beginPath();
+                        let firstPoint = true;
+                        
+                        cleanedPoints.forEach(point => {
+                            const cx = toCanvasX(point.x);
+                            const cy = toCanvasY(point.y);
+                            
+                            if (cy >= -100 && cy <= height + 100 && cx >= -200 && cx <= width + 200) {
+                                if (firstPoint) {
+                                    ctx.moveTo(cx, cy);
+                                    firstPoint = false;
+                                } else {
+                                    ctx.lineTo(cx, cy);
+                                }
+                            }
+                        });
+                        
+                        ctx.stroke();
+                    }
+                } else {
+                    // For equations like x + y = 5, x^2 + y^2 = 25, use grouping for multiple curves
+                    const curves = groupPointsIntoCurves(allPoints);
+                    
+                    curves.forEach(curve => {
+                        if (curve.length > 1) {
+                            ctx.beginPath();
+                            let firstPoint = true;
+                            
+                            curve.forEach(point => {
+                                const cx = toCanvasX(point.x);
+                                const cy = toCanvasY(point.y);
+                                
+                                if (cy >= -30 && cy <= height + 30 && cx >= -30 && cx <= width + 30) {
+                                    if (firstPoint) {
+                                        ctx.moveTo(cx, cy);
+                                        firstPoint = false;
+                                    } else {
+                                        ctx.lineTo(cx, cy);
+                                    }
+                                }
+                            });
+                            
+                            ctx.stroke();
+                        }
+                    });
+                }
+            }
+        }
+    };
+
     useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -276,145 +858,6 @@ const MathVisualizer: React.FC = () => {
             plotEquation(ctx, validation.compiled, validation.originalExpr, eq.color, width, height, xMin, xMax, yMin, yMax, toCanvasX, toCanvasY);
         });
     }, [equations, xMin, xMax, yMin, yMax]);
-
-    // Equation plotting function - handles all types of equations
-    const plotEquation = (ctx: CanvasRenderingContext2D, compiled: math.EvalFunction, originalExpr: string, color: string, width: number, height: number, xMin: number, xMax: number, yMin: number, yMax: number, toCanvasX: (x: number) => number, toCanvasY: (y: number) => number) => {
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 3;
-        
-        // Determine if equation involves y variable by testing different y values
-        let involvesY = false;
-        try {
-            const test1 = compiled.evaluate({ x: 1, y: 1 });
-            const test2 = compiled.evaluate({ x: 1, y: 2 });
-            involvesY = Math.abs(test1 - test2) > 0.0001;
-        } catch {
-            // If we can't evaluate with y, assume it doesn't involve y
-            involvesY = false;
-        }
-        
-        if (!involvesY) {
-            // Single-variable equations like sin(x) = 1, x^2 = 4, cos(x) = 0.5
-            // Find x-values where equation is satisfied and draw vertical lines
-            ctx.beginPath();
-            const xRange = xMax - xMin;
-            const step = xRange / (width * 4); // High resolution for finding solutions
-            const solutions = new Set<number>();
-            
-            // Find approximate solutions
-            for (let x = xMin; x <= xMax; x += step) {
-                try {
-                    const result = compiled.evaluate({ x });
-                    if (Math.abs(result) < 0.02) { // Small tolerance for finding roots
-                        // Round to avoid duplicate nearby solutions
-                        const roundedX = Math.round(x * 100) / 100;
-                        solutions.add(roundedX);
-                    }
-                } catch {
-                    // Skip invalid points
-                }
-            }
-            
-            // Draw vertical lines at solutions
-            solutions.forEach(x => {
-                const cx = toCanvasX(x);
-                if (cx >= 0 && cx <= width) {
-                    ctx.moveTo(cx, 0);
-                    ctx.lineTo(cx, height);
-                    
-                    // Add a marker circle at the center
-                    ctx.beginPath();
-                    ctx.arc(cx, height / 2, 6, 0, 2 * Math.PI);
-                    ctx.fillStyle = color;
-                    ctx.fill();
-                    ctx.beginPath();
-                }
-            });
-            
-            ctx.stroke();
-            
-        } else {
-            // Multi-variable equations like x + y = 5, x^2 + y^2 = 25
-            // Use implicit plotting with high-precision binary search
-            ctx.beginPath();
-            let firstPoint = true;
-            const xRange = xMax - xMin;
-            const step = xRange / (width * 2); // Good resolution for smooth curves
-            
-            for (let x = xMin; x <= xMax; x += step) {
-                try {
-                    // Use binary search to find y where equation = 0 (left - right = 0)
-                    let yLow = yMin;
-                    let yHigh = yMax;
-                    let foundY = null;
-                    
-                    // Check if there's a sign change across the y-range
-                    let fLow, fHigh;
-                    try {
-                        fLow = compiled.evaluate({ x, y: yLow });
-                        fHigh = compiled.evaluate({ x, y: yHigh });
-                    } catch {
-                        continue; // Skip this x if we can't evaluate
-                    }
-                    
-                    // If there's a sign change, there's a root in between
-                    if (fLow * fHigh <= 0) {
-                        // Binary search for the root
-                        for (let iter = 0; iter < 50; iter++) {
-                            const yMid = (yLow + yHigh) / 2;
-                            let fMid;
-                            try {
-                                fMid = compiled.evaluate({ x, y: yMid });
-                            } catch {
-                                break; // Exit if evaluation fails
-                            }
-                            
-                            if (Math.abs(fMid) < 0.0001) {
-                                foundY = yMid;
-                                break;
-                            }
-                            
-                            if (fMid * fLow < 0) {
-                                yHigh = yMid;
-                                fHigh = fMid;
-                            } else {
-                                yLow = yMid;
-                                fLow = fMid;
-                            }
-                            
-                            if (Math.abs(yHigh - yLow) < 0.0001) {
-                                foundY = (yLow + yHigh) / 2;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (foundY !== null && isFinite(foundY)) {
-                        const cx = toCanvasX(x);
-                        const cy = toCanvasY(foundY);
-                        
-                        // Only plot points within reasonable bounds
-                        if (cy >= -30 && cy <= height + 30) {
-                            if (firstPoint) {
-                                ctx.moveTo(cx, cy);
-                                firstPoint = false;
-                            } else {
-                                ctx.lineTo(cx, cy);
-                            }
-                        } else {
-                            firstPoint = true;
-                        }
-                    } else {
-                        firstPoint = true;
-                    }
-                } catch {
-                    firstPoint = true;
-                }
-            }
-            
-            ctx.stroke();
-        }
-    };
 
     const utilityButtons = [
         { label: '+', value: '+', color: 'bg-blue-50 hover:bg-blue-100 text-blue-700' },
@@ -557,11 +1000,11 @@ const MathVisualizer: React.FC = () => {
                                 { expr: 'x + y = 5', desc: 'Linear equation' },
                                 { expr: 'x^2 + y^2 = 25', desc: 'Circle equation' },
                                 { expr: 'y = x^2', desc: 'Parabola equation' },
-                                { expr: 'sin(x) = 0.5', desc: 'Sine equation' },
-                                { expr: 'x^2 = 4', desc: 'Vertical line solutions' },
+                                { expr: 'x = sin(y)', desc: 'Sideways sine wave' },
+                                { expr: 'x = y^2', desc: 'Sideways parabola' },
                                 { expr: 'y = sin(x)', desc: 'Sine wave equation' },
-                                { expr: 'x^2 + y^2 = 9', desc: 'Circle (radius 3)' },
-                                { expr: 'cos(x) = 0', desc: 'Cosine zero points' },
+                                { expr: 'x^2 = 4', desc: 'Vertical line solutions' },
+                                { expr: 'y^2 = 9', desc: 'Horizontal line solutions' },
                             ].map(ex => (
                                 <button
                                     key={ex.expr}
