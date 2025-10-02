@@ -278,7 +278,7 @@ const MathVisualizer: React.FC = () => {
     }, [equations, xMin, xMax, yMin, yMax]);
 
     // Equation plotting function - handles all types of equations
-    const plotEquation = (ctx: CanvasRenderingContext2D, compiled: any, originalExpr: string, color: string, width: number, height: number, xMin: number, xMax: number, yMin: number, yMax: number, toCanvasX: (x: number) => number, toCanvasY: (y: number) => number) => {
+    const plotEquation = (ctx: CanvasRenderingContext2D, compiled: math.EvalFunction, originalExpr: string, color: string, width: number, height: number, xMin: number, xMax: number, yMin: number, yMax: number, toCanvasX: (x: number) => number, toCanvasY: (y: number) => number) => {
         ctx.strokeStyle = color;
         ctx.lineWidth = 3;
         
