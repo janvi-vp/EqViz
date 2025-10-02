@@ -13,7 +13,7 @@ const MathVisualizer: React.FC = () => {
         error: string | null;
     };
     const [equations, setEquations] = useState<Equation[]>([
-        { id: 1, expr: 'sin(x)', visible: true, color: '#3b82f6', error: null }
+        { id: 1, expr: 'x + y = 5', visible: true, color: '#3b82f6', error: null }
     ]);
     const [nextId, setNextId] = useState<number>(2);
     const [activeInput, setActiveInput] = useState<number | null>(null);
@@ -27,17 +27,57 @@ const MathVisualizer: React.FC = () => {
     const colors = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 
     const validateAndParse = (expr: string) => {
-        if (!expr.trim()) return { valid: false, compiled: null, error: null };
+        if (!expr.trim()) return { valid: false, compiled: null, error: 'Please enter an equation' };
+        
+        const trimmedExpr = expr.trim();
+        
+        // Check if it contains exactly one equals sign (no inequalities)
+        if (!trimmedExpr.includes('=')) {
+            return { valid: false, compiled: null, error: 'Please enter an equation with = (e.g., x + y = 5, sin(x) = 1)' };
+        }
+        
+        if (trimmedExpr.includes('>=') || trimmedExpr.includes('<=') || 
+            trimmedExpr.includes('<') || trimmedExpr.includes('>')) {
+            return { valid: false, compiled: null, error: 'Only equations with = are supported, not inequalities' };
+        }
+        
+        const parts = trimmedExpr.split('=');
+        if (parts.length !== 2) {
+            return { valid: false, compiled: null, error: 'Equation must have exactly one = sign' };
+        }
+        
         try {
-            const compiled = math.compile(expr);
-            compiled.evaluate({ x: 0, y: 0 });
-            return { valid: true, compiled, error: null };
+            const leftSide = parts[0].trim();
+            const rightSide = parts[1].trim();
+            
+            if (!leftSide || !rightSide) {
+                return { valid: false, compiled: null, error: 'Both sides of equation must have expressions' };
+            }
+            
+            // Convert "a = b" to "(a) - (b)" for root finding
+            const processedExpr = `(${leftSide}) - (${rightSide})`;
+            const compiled = math.compile(processedExpr);
+            
+            // Test compilation with sample values
+            try {
+                compiled.evaluate({ x: 1, y: 1 });
+            } catch {
+                try {
+                    compiled.evaluate({ x: 1 });
+                } catch {
+                    try {
+                        compiled.evaluate({ y: 1 });
+                    } catch {
+                        return { valid: false, compiled: null, error: 'Invalid mathematical expression' };
+                    }
+                }
+            }
+            
+            return { valid: true, compiled, error: null, originalExpr: trimmedExpr, leftSide, rightSide };
         } catch (e: unknown) {
-            let errorMsg = 'Unknown error';
+            let errorMsg = 'Invalid mathematical expression';
             if (e instanceof Error) {
                 errorMsg = e.message;
-            } else if (typeof e === 'object' && e !== null && 'message' in e) {
-                errorMsg = String((e as { message?: string }).message);
             }
             return { valid: false, compiled: null, error: errorMsg };
         }
@@ -226,28 +266,135 @@ const MathVisualizer: React.FC = () => {
             ctx.fillText(i.toFixed(1), Math.max(x - 5, 35), y);
         }
 
-        // Plot equations
+        // Plot equations only
         equations.forEach(eq => {
             if (!eq.visible || !eq.expr || eq.error) return;
 
             const validation = validateAndParse(eq.expr);
-            if (!validation.valid) return;
+            if (!validation.valid || !validation.compiled) return;
 
-            ctx.strokeStyle = eq.color;
-            ctx.lineWidth = 2.5;
+            plotEquation(ctx, validation.compiled, validation.originalExpr, eq.color, width, height, xMin, xMax, yMin, yMax, toCanvasX, toCanvasY);
+        });
+    }, [equations, xMin, xMax, yMin, yMax]);
+
+    // Equation plotting function - handles all types of equations
+    const plotEquation = (ctx: CanvasRenderingContext2D, compiled: any, originalExpr: string, color: string, width: number, height: number, xMin: number, xMax: number, yMin: number, yMax: number, toCanvasX: (x: number) => number, toCanvasY: (y: number) => number) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        
+        // Determine if equation involves y variable by testing different y values
+        let involvesY = false;
+        try {
+            const test1 = compiled.evaluate({ x: 1, y: 1 });
+            const test2 = compiled.evaluate({ x: 1, y: 2 });
+            involvesY = Math.abs(test1 - test2) > 0.0001;
+        } catch {
+            // If we can't evaluate with y, assume it doesn't involve y
+            involvesY = false;
+        }
+        
+        if (!involvesY) {
+            // Single-variable equations like sin(x) = 1, x^2 = 4, cos(x) = 0.5
+            // Find x-values where equation is satisfied and draw vertical lines
             ctx.beginPath();
-
-            let firstPoint = true;
-            const step = xRange / (width * 2);
-
+            const xRange = xMax - xMin;
+            const step = xRange / (width * 4); // High resolution for finding solutions
+            const solutions = new Set<number>();
+            
+            // Find approximate solutions
             for (let x = xMin; x <= xMax; x += step) {
                 try {
-                    const y = validation.compiled ? validation.compiled.evaluate({ x, y: 0 }) : undefined;
-                    if (typeof y === 'number' && isFinite(y)) {
+                    const result = compiled.evaluate({ x });
+                    if (Math.abs(result) < 0.02) { // Small tolerance for finding roots
+                        // Round to avoid duplicate nearby solutions
+                        const roundedX = Math.round(x * 100) / 100;
+                        solutions.add(roundedX);
+                    }
+                } catch {
+                    // Skip invalid points
+                }
+            }
+            
+            // Draw vertical lines at solutions
+            solutions.forEach(x => {
+                const cx = toCanvasX(x);
+                if (cx >= 0 && cx <= width) {
+                    ctx.moveTo(cx, 0);
+                    ctx.lineTo(cx, height);
+                    
+                    // Add a marker circle at the center
+                    ctx.beginPath();
+                    ctx.arc(cx, height / 2, 6, 0, 2 * Math.PI);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+                    ctx.beginPath();
+                }
+            });
+            
+            ctx.stroke();
+            
+        } else {
+            // Multi-variable equations like x + y = 5, x^2 + y^2 = 25
+            // Use implicit plotting with high-precision binary search
+            ctx.beginPath();
+            let firstPoint = true;
+            const xRange = xMax - xMin;
+            const step = xRange / (width * 2); // Good resolution for smooth curves
+            
+            for (let x = xMin; x <= xMax; x += step) {
+                try {
+                    // Use binary search to find y where equation = 0 (left - right = 0)
+                    let yLow = yMin;
+                    let yHigh = yMax;
+                    let foundY = null;
+                    
+                    // Check if there's a sign change across the y-range
+                    let fLow, fHigh;
+                    try {
+                        fLow = compiled.evaluate({ x, y: yLow });
+                        fHigh = compiled.evaluate({ x, y: yHigh });
+                    } catch {
+                        continue; // Skip this x if we can't evaluate
+                    }
+                    
+                    // If there's a sign change, there's a root in between
+                    if (fLow * fHigh <= 0) {
+                        // Binary search for the root
+                        for (let iter = 0; iter < 50; iter++) {
+                            const yMid = (yLow + yHigh) / 2;
+                            let fMid;
+                            try {
+                                fMid = compiled.evaluate({ x, y: yMid });
+                            } catch {
+                                break; // Exit if evaluation fails
+                            }
+                            
+                            if (Math.abs(fMid) < 0.0001) {
+                                foundY = yMid;
+                                break;
+                            }
+                            
+                            if (fMid * fLow < 0) {
+                                yHigh = yMid;
+                                fHigh = fMid;
+                            } else {
+                                yLow = yMid;
+                                fLow = fMid;
+                            }
+                            
+                            if (Math.abs(yHigh - yLow) < 0.0001) {
+                                foundY = (yLow + yHigh) / 2;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (foundY !== null && isFinite(foundY)) {
                         const cx = toCanvasX(x);
-                        const cy = toCanvasY(y);
-
-                        if (cy >= -10 && cy <= height + 10) {
+                        const cy = toCanvasY(foundY);
+                        
+                        // Only plot points within reasonable bounds
+                        if (cy >= -30 && cy <= height + 30) {
                             if (firstPoint) {
                                 ctx.moveTo(cx, cy);
                                 firstPoint = false;
@@ -264,10 +411,10 @@ const MathVisualizer: React.FC = () => {
                     firstPoint = true;
                 }
             }
-
+            
             ctx.stroke();
-        });
-    }, [equations, xMin, xMax, yMin, yMax]);
+        }
+    };
 
     const utilityButtons = [
         { label: '+', value: '+', color: 'bg-blue-50 hover:bg-blue-100 text-blue-700' },
@@ -316,10 +463,10 @@ const MathVisualizer: React.FC = () => {
                         <div className="mb-4 p-4 bg-white/60 backdrop-blur-md rounded-xl text-sm space-y-2 border border-blue-100 shadow-md animate-fade-in">
                             <p className="font-semibold text-cyan-900">Quick Tips:</p>
                             <ul className="list-disc list-inside text-blue-700 space-y-1">
+                                <li>Only equations with = are supported (no functions or inequalities)</li>
                                 <li>Click an input to activate it, then use buttons below</li>
                                 <li>Use ^ for powers: x^2, sin(x)^3</li>
-                                <li>Functions auto-add parentheses</li>
-                                <li>Try the examples to get started!</li>
+                                <li>Examples: x + y = 5, sin(x) = 0.5, x^2 + y^2 = 25</li>
                             </ul>
                         </div>
                     )}
@@ -361,7 +508,7 @@ const MathVisualizer: React.FC = () => {
                                         value={eq.expr}
                                         onChange={(e) => updateEquation(eq.id, e.target.value)}
                                         onFocus={() => setActiveInput(eq.id)}
-                                        placeholder="Enter equation (e.g., x^2)"
+                                        placeholder="Enter equation (e.g., x + y = 5)"
                                         className="flex-1 min-w-0 px-3 py-2 border-2 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 bg-white/80 text-indigo-900 placeholder-blue-400 shadow-sm transition-all duration-200"
                                     />
                                     <button
@@ -407,14 +554,14 @@ const MathVisualizer: React.FC = () => {
                         <h3 className="font-semibold mb-3 text-cyan-700">Examples - Click to Add</h3>
                         <div className="space-y-2">
                             {[
-                                { expr: 'x^2', desc: 'Parabola' },
-                                { expr: 'sin(x)', desc: 'Sine wave' },
-                                { expr: 'cos(x)', desc: 'Cosine wave' },
-                                { expr: 'log(x)', desc: 'Logarithm' },
-                                { expr: 'e^x', desc: 'Exponential' },
-                                { expr: 'sqrt(abs(x))', desc: 'Square root' },
-                                { expr: '1/x', desc: 'Hyperbola' },
-                                { expr: 'sin(x)^2 + cos(x)^2', desc: 'Trig identity' },
+                                { expr: 'x + y = 5', desc: 'Linear equation' },
+                                { expr: 'x^2 + y^2 = 25', desc: 'Circle equation' },
+                                { expr: 'y = x^2', desc: 'Parabola equation' },
+                                { expr: 'sin(x) = 0.5', desc: 'Sine equation' },
+                                { expr: 'x^2 = 4', desc: 'Vertical line solutions' },
+                                { expr: 'y = sin(x)', desc: 'Sine wave equation' },
+                                { expr: 'x^2 + y^2 = 9', desc: 'Circle (radius 3)' },
+                                { expr: 'cos(x) = 0', desc: 'Cosine zero points' },
                             ].map(ex => (
                                 <button
                                     key={ex.expr}
